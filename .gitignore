@@ -1,3 +1,9 @@
+.project
+.cproject
+.settings
+Debug
+build
+
 # Prerequisites
 *.d
 
