@@ -5,4 +5,7 @@ enable_language(CUDA)
 
 add_executable(main main.cu)
 target_compile_options(main PRIVATE "-arch=sm_50" "--ptxas-options=-v")
+#set_property(TARGET main PROPERTY CXX_STANDARD 11)
+#set_property(TARGET main PROPERTY CUDA_STANDARD 11)
+
 

@@ -5,9 +5,12 @@
 // const size_t Nx = 64;
 // const size_t Ny = 64;
 // const size_t Nz = 64;
-size_t Nx = 128;
-size_t Ny = 512;
-size_t Nz = 512;
+// size_t Nx = 16;
+// size_t Ny = 8;
+// size_t Nz = 8;
+const size_t Nx = 128;
+const size_t Ny = 512;
+const size_t Nz = 512;
 
 const size_t nrepeat = 100;
 
@@ -18,6 +21,7 @@ __host__ __device__ __forceinline__ int index(const int i, const int j,
     const int kstride = sizes.x * sizes.y;
     return i * istride + j * jstride + k * kstride;
 }
+
 __host__ __device__ __forceinline__ int
 index_strides(const int i, const int j, const int k, const dim3 strides) {
     return i * strides.x + j * strides.y + k * strides.z;
@@ -82,40 +86,33 @@ __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
     int kk = threadIdx.z;
 
     smem[index_smem(ii, jj, kk)] = __ldg(&n[index_strides(i, j, k, strides)]);
-    if (ii == 0) {
-        if (jj != 0 && kk != 0 && //
-            jj != blockDim.y - 1 && kk != blockDim.z - 1) {
-            if (i > 0)
-                smem[index_smem(-1, jj, kk)] =
-                    __ldg(&n[index_strides(i - 1, j, k, strides)]);
-            if (i < sizes.x - 1)
-                smem[index_smem(blockDim.x, jj, kk)] =
-                    __ldg(&n[index_strides(i + 1, j, k, strides)]);
-        }
-    }
-    if (jj == 0) {
-        if (ii != 0 && kk != 0 && //
-            ii != blockDim.x - 1 && kk != blockDim.z - 1) {
-            if (j > 0)
-                smem[index_smem(ii, -1, kk)] =
-                    __ldg(&n[index_strides(i, j - 1, k, strides)]);
-            if (j < sizes.y - 1)
-                smem[index_smem(ii, blockDim.y, kk)] =
-                    __ldg(&n[index_strides(i, j + 1, k, strides)]);
-        }
-    }
-    if (kk == 0) {
-        if (ii != 0 && jj != 0 && //
-            ii != blockDim.x - 1 && jj != blockDim.y - 1) {
-            if (k > 0)
-                smem[index_smem(ii, jj, -1)] =
-                    __ldg(&n[index_strides(i, j, k - 1, strides)]);
-            if (k < sizes.z - 1)
-                smem[index_smem(ii, jj, blockDim.z)] =
-                    __ldg(&n[index_strides(i, j, k + 1, strides)]);
-        }
-    }
+    if (ii == 0)
+        if (i > 0)
+            smem[index_smem(-1, jj, kk)] =
+                __ldg(&n[index_strides(i - 1, j, k, strides)]);
+    if (ii == blockDim.x - 1)
+        if (i < sizes.x - 1)
+            smem[index_smem(blockDim.x, jj, kk)] =
+                __ldg(&n[index_strides(i + 1, j, k, strides)]);
+    if (jj == 0)
+        if (j > 0)
+            smem[index_smem(ii, -1, kk)] =
+                __ldg(&n[index_strides(i, j - 1, k, strides)]);
+    if (jj == blockDim.y - 1)
+        if (j < sizes.y - 1)
+            smem[index_smem(ii, blockDim.y, kk)] =
+                __ldg(&n[index_strides(i, j + 1, k, strides)]);
 
+    if (kk == 0)
+        if (k > 0)
+            smem[index_smem(ii, jj, -1)] =
+                __ldg(&n[index_strides(i, j, k - 1, strides)]);
+    if (kk == blockDim.z - 1)
+        if (k < sizes.z - 1)
+            smem[index_smem(ii, jj, blockDim.z)] =
+                __ldg(&n[index_strides(i, j, k + 1, strides)]);
+
+    __syncthreads();
     if (i > 0 && i < sizes.x - 1)
         if (j > 0 && j < sizes.y - 1)
             if (k > 0 && k < sizes.z - 1)
@@ -128,8 +125,6 @@ __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
                                   + smem[index_smem(ii, jj, kk - 1)] //
                                   + smem[index_smem(ii, jj, kk + 1)] //
                                   - 6. * smem[index_smem(ii, jj, kk)]);
-
-    //    d[index_strides(i, j, k, strides)] = smem[index_smem(ii, jj, kk)];
 }
 
 void init(double *n, const dim3 sizes) {
@@ -146,9 +141,17 @@ void init(double *n, const dim3 sizes) {
 void print(double *n, const dim3 sizes) {
     for (size_t i = 0; i < sizes.x; ++i) {
         std::cout << (double)i / (double)(sizes.x - 1) << " \t"
-                  << 1. / -0.004 * n[index(i, sizes.y / 2, sizes.z / 2, sizes)]
+                  << -1. * n[index(i, sizes.y / 2, sizes.z / 2, sizes)] /
+                         pow(2. * M_PI / sizes.x, 3)
                   << std::endl;
     }
+    //    for (size_t i = 0; i < sizes.y; ++i) {
+    //        std::cout << (double)i / (double)(sizes.y - 1) << " \t"
+    //                  << 1. / -0.004 * n[index(sizes.x / 2, i, sizes.z /
+    //                  2,
+    //                  sizes)]
+    //                  << std::endl;
+    //    }
 }
 
 float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
@@ -157,6 +160,9 @@ float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
     return result;
 }
 
+// enum class Variation { STANDARD, SHARED_MEM };
+
+// template <Variation Var>
 void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     const dim3 sizes(Nx, Ny, Nz);
     const dim3 strides(1, Nx, Nx * Ny);
@@ -168,16 +174,19 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     dim3 nBlocks(Nx / threadsPerBlock.x, Ny / threadsPerBlock.y,
                  Nz / threadsPerBlock.z);
 
-    cudaEventRecord(start_, 0);
-
     size_t smem_size = (threadsPerBlock.x + 2) * (threadsPerBlock.y + 2) *
                        (threadsPerBlock.z + 2);
 
-    for (size_t i = 0; i < nrepeat; ++i)
-        //        laplace3d_strides<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes,
-        //        strides);
-        laplace3d_smem<<<nBlocks, threadsPerBlock,
-                         smem_size * sizeof(double)>>>(dd, dn, sizes, strides);
+    cudaEventRecord(start_, 0);
+
+    for (size_t i = 0; i < nrepeat; ++i) {
+        //        if (Var == Variation::SHARED_MEM)
+        //        laplace3d_smem<<<nBlocks, threadsPerBlock,
+        //                         smem_size * sizeof(double)>>>(dd, dn, sizes,
+        //                         strides);
+        //        else if (Var == Variation::STANDARD)
+        laplace3d_strides<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes, strides);
+    }
     //        laplace3d<<<nBlocks, threadsPerBlock>>>(dd, dn);
     cudaEventRecord(stop_, 0);
     cudaEventSynchronize(stop_);
@@ -210,11 +219,13 @@ int main() {
     cudaMemcpy(dn, n, sizeof(double) * total_size, cudaMemcpyHostToDevice);
 
     execute(dim3(32, 4, 4), dd, dn);
-    execute(dim3(8, 8, 8), dd, dn);
-    //    execute(dim3(16, 8, 8), dd, dn);
-    //    execute(dim3(16, 16, 4), dd, dn);
-    //    execute(dim3(32, 8, 4), dd, dn);
-    //    execute(dim3(64, 4, 4), dd, dn);
+
+    //    execute<Variation::STANDARD>(dim3(32, 4, 4), dd, dn);
+    //    execute<Variation::STANDARD>(dim3(8, 8, 8), dd, dn);
+    //    execute<Variation::STANDARD>(dim3(16, 8, 8), dd, dn);
+    //    execute<Variation::STANDARD>(dim3(16, 16, 4), dd, dn);
+    //    execute<Variation::STANDARD>(dim3(32, 8, 4), dd, dn);
+    //    execute<Variation::STANDARD>(dim3(64, 4, 4), dd, dn);
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
 
