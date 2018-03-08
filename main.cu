@@ -181,22 +181,21 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
 
     for (size_t i = 0; i < nrepeat; ++i) {
         if (Var == Variation::SHARED_MEM)
-                laplace3d_smem<<<nBlocks, threadsPerBlock,
-                                 smem_size * sizeof(double)>>>(dd, dn, sizes,
-                                 strides);
-                else if (Var == Variation::STANDARD)
-                    laplace3d_strides<<<nBlocks, threadsPerBlock>>>(
-                     dd, dn, sizes, strides);
+            laplace3d_smem<<<nBlocks, threadsPerBlock,
+                             smem_size * sizeof(double)>>>(dd, dn, sizes,
+                                                           strides);
+        else if (Var == Variation::STANDARD)
+            laplace3d_strides<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes,
+                                                            strides);
     }
     //        laplace3d<<<nBlocks, threadsPerBlock>>>(dd, dn);
     cudaEventRecord(stop_, 0);
     cudaEventSynchronize(stop_);
 
-
     std::cout << "Variation: ";
-    if( Var == Variation::STANDARD )
+    if (Var == Variation::STANDARD)
         std::cout << " Standard,   \t";
-    else if(Var == Variation::SHARED_MEM)
+    else if (Var == Variation::SHARED_MEM)
         std::cout << " Shared Mem, \t";
     std::cout << "# threads/block = (" << threadsPerBlock.x << "/"
               << threadsPerBlock.y << "/" << threadsPerBlock.z << "), \t";
@@ -225,19 +224,19 @@ int main() {
 
     cudaMemcpy(dn, n, sizeof(double) * total_size, cudaMemcpyHostToDevice);
 
-    //execute(dim3(32, 4, 4), dd, dn);
+    // execute(dim3(32, 4, 4), dd, dn);
 
-        execute<Variation::STANDARD>(dim3(32, 4, 4), dd, dn);
-        execute<Variation::STANDARD>(dim3(8, 8, 8), dd, dn);
-        execute<Variation::SHARED_MEM>(dim3(8, 8, 8), dd, dn);
-        execute<Variation::STANDARD>(dim3(16, 8, 8), dd, dn);
-        execute<Variation::STANDARD>(dim3(16, 16, 4), dd, dn);
-        execute<Variation::STANDARD>(dim3(32, 8, 4), dd, dn);
-        execute<Variation::STANDARD>(dim3(64, 4, 4), dd, dn);
+    execute<Variation::STANDARD>(dim3(32, 4, 4), dd, dn);
+    execute<Variation::STANDARD>(dim3(8, 8, 8), dd, dn);
+    execute<Variation::SHARED_MEM>(dim3(8, 8, 8), dd, dn);
+    execute<Variation::STANDARD>(dim3(16, 8, 8), dd, dn);
+    execute<Variation::STANDARD>(dim3(16, 16, 4), dd, dn);
+    execute<Variation::STANDARD>(dim3(32, 8, 4), dd, dn);
+    execute<Variation::STANDARD>(dim3(64, 4, 4), dd, dn);
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
 
-    //print(d, sizes);
+    // print(d, sizes);
 
     delete[] d;
     cudaFree(dd);
