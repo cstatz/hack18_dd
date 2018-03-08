@@ -20,4 +20,15 @@ target_compile_options(main PRIVATE "-arch=${CUDA_ARCH}" "--ptxas-options=-v")
 set_property(TARGET main PROPERTY CXX_STANDARD 11)
 set_property(TARGET main PROPERTY CUDA_STANDARD 11)
 
+add_library(laplace3d_strides SHARED laplace3d_strides.cu)
+target_compile_options(laplace3d_strides PRIVATE "-arch=${CUDA_ARCH}" "--ptxas-options=-v")
+set_property(TARGET laplace3d_strides PROPERTY CXX_STANDARD 11)
+set_property(TARGET laplace3d_strides PROPERTY CUDA_STANDARD 11)
+
+add_executable(test_laplace3d_strides test_liblaplace3d_strides.cu)
+target_compile_options(test_laplace3d_strides PRIVATE "-arch=${CUDA_ARCH}" "--ptxas-options=-v")
+set_property(TARGET test_laplace3d_strides PROPERTY CXX_STANDARD 11)
+set_property(TARGET test_laplace3d_strides PROPERTY CUDA_STANDARD 11)
+target_link_libraries(test_laplace3d_strides laplace3d_strides)
+
 
