@@ -68,6 +68,29 @@ __global__ void laplace3d_strides(double *d, double *n, const dim3 sizes,
                         - 6. * __ldg(&n[index_strides(i, j, k, strides)]));
 }
 
+__global__ void laplace3d_relative_indexing(double *d, double *n,
+                                            const dim3 sizes,
+                                            const dim3 strides) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    int k = threadIdx.z + blockIdx.z * blockDim.z;
+
+    int index = index_strides(i, j, k, strides);
+
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1)
+                d[index_strides(i, j, k, strides)] =
+                    1. / 2. * (                                  //
+                                  __ldg(&n[index - strides.x])   //
+                                  + __ldg(&n[index + strides.x]) //
+                                  + __ldg(&n[index - strides.y]) //
+                                  + __ldg(&n[index + strides.y]) //
+                                  + __ldg(&n[index - strides.z]) //
+                                  + __ldg(&n[index + strides.z]) //
+                                  - 6. * __ldg(&n[index]));
+}
+
 __global__ void laplace3d_no_ldg(double *d, double *n, const dim3 sizes,
                                  const dim3 strides) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -180,7 +203,7 @@ float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
     return result;
 }
 
-enum class Variation { STANDARD, SHARED_MEM, NO_LDG };
+enum class Variation { STANDARD, SHARED_MEM, NO_LDG, RELATIVE };
 
 template <Variation Var>
 void execute(dim3 threadsPerBlock, double *dd, double *dn) {
@@ -210,19 +233,24 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
         else if (Var == Variation::NO_LDG)
             laplace3d_no_ldg<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes,
                                                            strides);
+        else if (Var == Variation::RELATIVE)
+            laplace3d_relative_indexing<<<nBlocks, threadsPerBlock>>>(
+                dd, dn, sizes, strides);
     }
     //        laplace3d<<<nBlocks, threadsPerBlock>>>(dd, dn);
     cudaEventRecord(stop_, 0);
     cudaEventSynchronize(stop_);
 
-    std::cout << "Variation: ";
+    std::cout << "# Variation: ";
     if (Var == Variation::STANDARD)
-        std::cout << " Standard,   \t";
+        std::cout << " Standard,       \t";
     else if (Var == Variation::SHARED_MEM)
-        std::cout << " Shared Mem, \t";
+        std::cout << " Shared Mem,     \t";
     else if (Var == Variation::NO_LDG)
-        std::cout << " No LDG,     \t";
-    std::cout << "# threads/block = (" << threadsPerBlock.x << "/"
+        std::cout << " No LDG,         \t";
+    else if (Var == Variation::RELATIVE)
+        std::cout << " relative index, \t";
+    std::cout << "threads/block = (" << threadsPerBlock.x << "/"
               << threadsPerBlock.y << "/" << threadsPerBlock.z << "), \t";
     std::cout << "blocks = (" << nBlocks.x << "/" << nBlocks.y << "/"
               << nBlocks.z << "), \t";
@@ -255,6 +283,7 @@ int main() {
     execute<Variation::STANDARD>(dim3(8, 8, 8), dd, dn);
     execute<Variation::SHARED_MEM>(dim3(8, 8, 8), dd, dn);
     execute<Variation::NO_LDG>(dim3(8, 8, 8), dd, dn);
+    execute<Variation::RELATIVE>(dim3(8, 8, 8), dd, dn);
     execute<Variation::STANDARD>(dim3(16, 8, 8), dd, dn);
     execute<Variation::STANDARD>(dim3(16, 16, 4), dd, dn);
     execute<Variation::STANDARD>(dim3(32, 8, 4), dd, dn);
