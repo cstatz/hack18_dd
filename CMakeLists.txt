@@ -16,7 +16,7 @@ set( CUDA_ARCH "sm_37" CACHE STRING "CUDA compute capability")
 set_property(CACHE CUDA_ARCH PROPERTY STRINGS sm_35 sm_37 sm_50 sm_60)
 
 add_executable(main main.cu)
-target_compile_options(main PRIVATE "-arch=sm_60" "--ptxas-options=-v")
+target_compile_options(main PRIVATE "-arch=${CUDA_ARCH}" "--ptxas-options=-v")
 set_property(TARGET main PROPERTY CXX_STANDARD 11)
 set_property(TARGET main PROPERTY CUDA_STANDARD 11)
 
