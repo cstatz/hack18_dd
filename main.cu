@@ -80,15 +80,14 @@ __global__ void laplace3d_relative_indexing(double *d, double *n,
     if (i > 0 && i < sizes.x - 1)
         if (j > 0 && j < sizes.y - 1)
             if (k > 0 && k < sizes.z - 1)
-                d[index_strides(i, j, k, strides)] =
-                    1. / 2. * (                                  //
-                                  __ldg(&n[index - strides.x])   //
-                                  + __ldg(&n[index + strides.x]) //
-                                  + __ldg(&n[index - strides.y]) //
-                                  + __ldg(&n[index + strides.y]) //
-                                  + __ldg(&n[index - strides.z]) //
-                                  + __ldg(&n[index + strides.z]) //
-                                  - 6. * __ldg(&n[index]));
+                d[index] = 1. / 2. * (                                  //
+                                         __ldg(&n[index - strides.x])   //
+                                         + __ldg(&n[index + strides.x]) //
+                                         + __ldg(&n[index - strides.y]) //
+                                         + __ldg(&n[index + strides.y]) //
+                                         + __ldg(&n[index - strides.z]) //
+                                         + __ldg(&n[index + strides.z]) //
+                                         - 6. * __ldg(&n[index]));
 }
 
 __global__ void laplace3d_no_ldg(double *d, double *n, const dim3 sizes,
