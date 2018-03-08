@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 __host__ __device__ __forceinline__ int
 index_strides(const int i, const int j, const int k, const dim3 strides) {
     return i * strides.x + j * strides.y + k * strides.z;
@@ -31,6 +33,15 @@ void call_laplace3d_strides(double *d, double *n, int Nx, int Ny, int Nz) {
     const dim3 nBlocks(Nx / threadsPerBlock.x, Ny / threadsPerBlock.y,
                        Nz / threadsPerBlock.z);
 
+    printf("Calling a CUDA kernel...\n");
     laplace3d_strides<<<nBlocks, threadsPerBlock>>>(d, n, sizes, strides);
+
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        fprintf(stderr, "CUDA ERROR: %s in %s at line %d\n",
+                cudaGetErrorString(error), __FILE__, __LINE__);
+        exit(-1);
+    }
 }
 }
