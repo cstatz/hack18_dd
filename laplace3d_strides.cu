@@ -37,7 +37,7 @@ extern "C" {
 void call_laplace3d_strides(double *d, double *n, int Nx, int Ny, int Nz) {
     const dim3 sizes(Nx, Ny, Nz);
     const dim3 strides(1, Nx, Nx * Ny);
-    const dim3 threadsPerBlock(16, 8, 8);
+    const dim3 threadsPerBlock(8, 8, 8);
     const dim3 nBlocks(Nx / threadsPerBlock.x, Ny / threadsPerBlock.y,
                        Nz / threadsPerBlock.z);
 
@@ -47,7 +47,7 @@ void call_laplace3d_strides(double *d, double *n, int Nx, int Ny, int Nz) {
     cudaEvent_t stop_;
     cudaEventCreate(&start_);
     cudaEventCreate(&stop_);
-    const size_t nrepeat = 100; // TODO we want to do this only once!
+    const size_t nrepeat = 1; // TODO we want to do this only once!
     printf("block size: (%d,%d,%d)\n", threadsPerBlock.x, threadsPerBlock.y,
            threadsPerBlock.z);
     printf("WARNING: We are repeating the kernel call %d times, don't use this "
