@@ -236,9 +236,9 @@ __global__ void laplace3d_smem2(double *d, double *n, const dim3 sizes,
     int kk = threadIdx.z;
 
     // copy all elements of the compute domain into the shared mem buffer
-    if (i > 0 && i < sizes.x - 1)
-        if (j > 0 && j < sizes.y - 1)
-            if (k > 0 && k < sizes.z - 1) {
+    if (i >= 0 && i < sizes.x)
+        if (j >= 0 && j < sizes.y)
+            if (k >= 0 && k < sizes.z) {
                 smem[index_smem2(ii, jj, kk)] =
                     __ldg(&n[index_strides(i, j, k, strides)]);
             }
@@ -247,9 +247,9 @@ __global__ void laplace3d_smem2(double *d, double *n, const dim3 sizes,
     if (i > 0 && i < sizes.x - 1)
         if (j > 0 && j < sizes.y - 1)
             if (k > 0 && k < sizes.z - 1)
-                if (ii > 0 && ii < blockDim.x - 2 - 1)
-                    if (jj > 0 && jj < blockDim.y - 2 - 1)
-                        if (kk > 0 && kk < blockDim.z - 2 - 1) {
+                if (ii > 0 && ii < blockDim.x - 1)
+                    if (jj > 0 && jj < blockDim.y - 1)
+                        if (kk > 0 && kk < blockDim.z - 1) {
                             d[index_strides(i, j, k, strides)] =
                                 1. / 2. *
                                 (                                       //
