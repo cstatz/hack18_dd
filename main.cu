@@ -469,6 +469,14 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     cudaEventRecord(stop_, 0);
     cudaEventSynchronize(stop_);
 
+    cudaDeviceSynchronize();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        fprintf(stderr, "CUDA ERROR: %s in %s at line %d\n",
+                cudaGetErrorString(error), __FILE__, __LINE__);
+        exit(-1);
+    }
+
     std::cout << "# Variation: " << Var;
     std::cout << "threads/block = (" << threadsPerBlock.x << "/"
               << threadsPerBlock.y << "/" << threadsPerBlock.z << "), \t";
@@ -481,12 +489,26 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     cudaEventDestroy(stop_);
 }
 
+bool verify(double *ref, double *out, dim3 sizes) {
+    for (size_t i = 1; i < sizes.x - 1; ++i)
+        for (size_t j = 1; j < sizes.y - 1; ++j)
+            for (size_t k = 1; k < sizes.z - 1; ++k) {
+                if (ref[i] != out[i]) {
+                    std::cout << "in index " << i << " val=" << out[i]
+                              << ", ref=" << ref[i] << std::endl;
+                    return false;
+                }
+            }
+    return true;
+}
+
 int main() {
     dim3 sizes(Nx, Ny, Nz);
 
     size_t total_size = Nx * Ny * Nz;
     double *d = new double[total_size];
     double *n = new double[total_size];
+    double *ref = new double[total_size];
 
     init(n, sizes);
 
@@ -497,8 +519,14 @@ int main() {
 
     cudaMemcpy(dn, n, sizeof(double) * total_size, cudaMemcpyHostToDevice);
 
+    // execute one of variations to be used as a reference
+    execute<Variation::NO_LDG>(dim3(8, 8, 8), dd, dn);
+    cudaMemcpy(ref, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
+
     std::vector<dim3> threadsPerBlock;
-    //    threadsPerBlock.emplace_back(14, 6, 6);
+    // the smem version does not work for non-full blocks, difficult exercise:
+    // threadsPerBlock.emplace_back(14, 6, 6);
+
     threadsPerBlock.emplace_back(32, 4, 4);
     threadsPerBlock.emplace_back(8, 8, 8);
     threadsPerBlock.emplace_back(16, 8, 8);
@@ -516,9 +544,19 @@ int main() {
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
 
-    print(d, sizes);
+    if (!verify(ref, d, sizes)) {
+        std::cout << "ERROR: the last executed variant didn't validate"
+                  << std::endl;
+    } else {
+        std::cout << "OK: last variation verified against the non-optimized "
+                     "CUDA version"
+                  << std::endl;
+    }
+    //    print(d, sizes);
 
     delete[] d;
+    delete[] n;
+    delete[] ref;
     cudaFree(dd);
     cudaFree(dn);
 }
