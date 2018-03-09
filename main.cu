@@ -213,6 +213,69 @@ __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
                                   - 6. * smem[index_smem(ii, jj, kk)]);
 }
 
+__global__ void laplace3d_smem_relative(double *__restrict__ d,
+                                        const double *__restrict__ n,
+                                        const dim3 sizes, const dim3 strides) {
+    extern __shared__ double smem[];
+    // global indices
+    const int i = threadIdx.x + blockIdx.x * blockDim.x;
+    const int j = threadIdx.y + blockIdx.y * blockDim.y;
+    const int k = threadIdx.z + blockIdx.z * blockDim.z;
+
+    // local indices
+    const int ii = threadIdx.x;
+    const int jj = threadIdx.y;
+    const int kk = threadIdx.z;
+
+    // local strides
+    const int is = blockDim.x;
+    const int js = blockDim.y;
+    const int ks = blockDim.z;
+
+    int glob_index = index_strides(i, j, k, strides);
+    int loc_index = index_smem(ii, jj, kk);
+
+    // copy all elements of the compute domain into the shared mem buffer (on
+    // block level)
+    smem[loc_index] = __ldg(&n[glob_index]);
+
+    // first and last threads (in all dimensions copy the halo region into the
+    // shared mem buffer
+    if (ii == 0)
+        if (i > 0)
+            smem[loc_index - is] = __ldg(&n[glob_index - strides.x]);
+    if (ii == blockDim.x - 1)
+        if (i < sizes.x - 1)
+            smem[loc_index + is] = __ldg(&n[glob_index + strides.x]);
+    if (jj == 0)
+        if (j > 0)
+            smem[loc_index - js] = __ldg(&n[glob_index - strides.y]);
+    if (jj == blockDim.y - 1)
+        if (j < sizes.y - 1)
+            smem[loc_index + js] = __ldg(&n[glob_index + strides.y]);
+
+    if (kk == 0)
+        if (k > 0)
+            smem[loc_index - ks] = __ldg(&n[glob_index - strides.z]);
+    if (kk == blockDim.z - 1)
+        if (k < sizes.z - 1)
+            smem[loc_index + ks] = __ldg(&n[glob_index + strides.z]);
+
+    __syncthreads();
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1)
+                // read only from the shared mem buffer
+                d[glob_index] = 1. / 2. * (                          //
+                                              smem[loc_index - is]   //
+                                              + smem[loc_index + is] //
+                                              + smem[loc_index - js] //
+                                              + smem[loc_index + js] //
+                                              + smem[loc_index - ks] //
+                                              + smem[loc_index + ks] //
+                                              - 6. * smem[loc_index]);
+}
+
 __host__ __device__ __forceinline__ int index_smem2(const int i, const int j,
                                                     const int k) {
     return i + j * (blockDim.x) + k * (blockDim.x) * (blockDim.y);
@@ -292,6 +355,7 @@ float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
 enum class Variation {
     LDG,
     SHARED_MEM,
+    SHARED_MEM_REL,
     NO_LDG,
     RELATIVE,
     CONST_RESTRICT,
@@ -301,22 +365,25 @@ enum class Variation {
 std::ostream &operator<<(std::ostream &s, Variation const &var) {
     switch (var) {
     case Variation::NO_LDG:
-        s << "no optimization,     ";
+        s << "no optimization,        ";
         break;
     case Variation::LDG:
-        s << "__ldg,               ";
+        s << "__ldg,                  ";
         break;
     case Variation::SHARED_MEM:
-        s << "shared memory,       ";
+        s << "shared memory,          ";
+        break;
+    case Variation::SHARED_MEM_REL:
+        s << "shared memory relative, ";
         break;
     case Variation::SHARED_MEM2:
-        s << "shared memory v2,    ";
+        s << "shared memory v2,       ";
         break;
     case Variation::RELATIVE:
-        s << "relative indexing,   ";
+        s << "relative indexing,      ";
         break;
     case Variation::CONST_RESTRICT:
-        s << "const __restrict__,  ";
+        s << "const __restrict__,     ";
         break;
     default:
         s << "n/a";
@@ -366,8 +433,14 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
             laplace3d_smem<<<nBlocks, threadsPerBlock,
                              smem_size * sizeof(double)>>>(dd, dn, sizes,
                                                            strides);
-        }
-        if (Var == Variation::SHARED_MEM2) {
+        } else if (Var == Variation::SHARED_MEM_REL) {
+            size_t smem_size = (threadsPerBlock.x + 2) *
+                               (threadsPerBlock.y + 2) *
+                               (threadsPerBlock.z + 2);
+            laplace3d_smem_relative<<<nBlocks, threadsPerBlock,
+                                      smem_size * sizeof(double)>>>(
+                dd, dn, sizes, strides);
+        } else if (Var == Variation::SHARED_MEM2) {
             size_t smem_size = (threadsPerBlock.x + 2) *
                                (threadsPerBlock.y + 2) *
                                (threadsPerBlock.z + 2);
@@ -438,6 +511,7 @@ int main() {
         execute<Variation::RELATIVE>(dim, dd, dn);
         execute<Variation::SHARED_MEM>(dim, dd, dn);
         execute<Variation::SHARED_MEM2>(dim, dd, dn);
+        execute<Variation::SHARED_MEM_REL>(dim, dd, dn);
     }
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
