@@ -213,6 +213,56 @@ __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
                                   - 6. * smem[index_smem(ii, jj, kk)]);
 }
 
+__host__ __device__ __forceinline__ int index_smem2(const int i, const int j,
+                                                    const int k) {
+    return i + j * (blockDim.x) + k * (blockDim.x) * (blockDim.y);
+}
+
+/**
+ * Using extra threads for copying halo points to
+ * each block and let them sleep for the actual computation.
+ */
+__global__ void laplace3d_smem2(double *d, double *n, const dim3 sizes,
+                                const dim3 strides) {
+    extern __shared__ double smem[];
+    // global indices
+    int i = -1 + (int)(threadIdx.x + blockIdx.x * (blockDim.x - 2));
+    int j = -1 + (int)(threadIdx.y + blockIdx.y * (blockDim.y - 2));
+    int k = -1 + (int)(threadIdx.z + blockIdx.z * (blockDim.z - 2));
+
+    // local indices
+    int ii = threadIdx.x;
+    int jj = threadIdx.y;
+    int kk = threadIdx.z;
+
+    // copy all elements of the compute domain into the shared mem buffer
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1) {
+                smem[index_smem2(ii, jj, kk)] =
+                    __ldg(&n[index_strides(i, j, k, strides)]);
+            }
+
+    __syncthreads();
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1)
+                if (ii > 0 && ii < blockDim.x - 2 - 1)
+                    if (jj > 0 && jj < blockDim.y - 2 - 1)
+                        if (kk > 0 && kk < blockDim.z - 2 - 1) {
+                            d[index_strides(i, j, k, strides)] =
+                                1. / 2. *
+                                (                                       //
+                                    smem[index_smem2(ii - 1, jj, kk)]   //
+                                    + smem[index_smem2(ii + 1, jj, kk)] //
+                                    + smem[index_smem2(ii, jj - 1, kk)] //
+                                    + smem[index_smem2(ii, jj + 1, kk)] //
+                                    + smem[index_smem2(ii, jj, kk - 1)] //
+                                    + smem[index_smem2(ii, jj, kk + 1)] //
+                                    - 6. * smem[index_smem2(ii, jj, kk)]);
+                        }
+}
+
 void init(double *n, const dim3 sizes) {
     for (size_t i = 0; i < sizes.x; ++i)
         for (size_t j = 0; j < sizes.y; ++j)
@@ -239,7 +289,14 @@ float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
     return result;
 }
 
-enum class Variation { LDG, SHARED_MEM, NO_LDG, RELATIVE, CONST_RESTRICT };
+enum class Variation {
+    LDG,
+    SHARED_MEM,
+    NO_LDG,
+    RELATIVE,
+    CONST_RESTRICT,
+    SHARED_MEM2
+};
 
 std::ostream &operator<<(std::ostream &s, Variation const &var) {
     switch (var) {
@@ -251,6 +308,9 @@ std::ostream &operator<<(std::ostream &s, Variation const &var) {
         break;
     case Variation::SHARED_MEM:
         s << "shared memory,       ";
+        break;
+    case Variation::SHARED_MEM2:
+        s << "shared memory v2,    ";
         break;
     case Variation::RELATIVE:
         s << "relative indexing,   ";
@@ -265,6 +325,9 @@ std::ostream &operator<<(std::ostream &s, Variation const &var) {
     return s;
 }
 
+/**
+ * Warning: one of the stencils is modifying the threadsPerBlock.
+ */
 template <Variation Var>
 void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     const dim3 sizes(Nx, Ny, Nz);
@@ -274,8 +337,24 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     cudaEvent_t stop_;
     cudaEventCreate(&start_);
     cudaEventCreate(&stop_);
-    dim3 nBlocks(Nx / threadsPerBlock.x, Ny / threadsPerBlock.y,
-                 Nz / threadsPerBlock.z);
+    int nBlocksX = Nx / threadsPerBlock.x;
+    int nBlocksY = Ny / threadsPerBlock.y;
+    int nBlocksZ = Nz / threadsPerBlock.z;
+
+    if (Nx % threadsPerBlock.x != 0) {
+        nBlocksX++;
+        throw std::runtime_error("there is a bug for non divisible sizes");
+    }
+    if (Ny % threadsPerBlock.y != 0) {
+        nBlocksY++;
+        throw std::runtime_error("there is a bug for non divisible sizes");
+    }
+    if (Nz % threadsPerBlock.z != 0) {
+        nBlocksZ++;
+        throw std::runtime_error("there is a bug for non divisible sizes");
+    }
+
+    dim3 nBlocks(nBlocksX, nBlocksY, nBlocksZ);
 
     cudaEventRecord(start_, 0);
 
@@ -287,6 +366,21 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
             laplace3d_smem<<<nBlocks, threadsPerBlock,
                              smem_size * sizeof(double)>>>(dd, dn, sizes,
                                                            strides);
+        }
+        if (Var == Variation::SHARED_MEM2) {
+            size_t smem_size = (threadsPerBlock.x + 2) *
+                               (threadsPerBlock.y + 2) *
+                               (threadsPerBlock.z + 2);
+
+            if (smem_size <= 1024) {
+
+                dim3 enlargedBlock(threadsPerBlock.x + 2, threadsPerBlock.y + 2,
+                                   threadsPerBlock.z + 2);
+
+                laplace3d_smem2<<<nBlocks, enlargedBlock,
+                                  smem_size * sizeof(double)>>>(dd, dn, sizes,
+                                                                strides);
+            }
         } else if (Var == Variation::LDG)
             laplace3d_ldg<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes, strides);
         else if (Var == Variation::NO_LDG)
@@ -331,9 +425,11 @@ int main() {
     cudaMemcpy(dn, n, sizeof(double) * total_size, cudaMemcpyHostToDevice);
 
     std::vector<dim3> threadsPerBlock;
+    //    threadsPerBlock.emplace_back(14, 6, 6);
     threadsPerBlock.emplace_back(32, 4, 4);
     threadsPerBlock.emplace_back(8, 8, 8);
     threadsPerBlock.emplace_back(16, 8, 8);
+    threadsPerBlock.emplace_back(16, 4, 4);
 
     for (auto dim : threadsPerBlock) {
         execute<Variation::NO_LDG>(dim, dd, dn);
@@ -341,11 +437,12 @@ int main() {
         execute<Variation::CONST_RESTRICT>(dim, dd, dn);
         execute<Variation::RELATIVE>(dim, dd, dn);
         execute<Variation::SHARED_MEM>(dim, dd, dn);
+        execute<Variation::SHARED_MEM2>(dim, dd, dn);
     }
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
 
-    // print(d, sizes);
+    print(d, sizes);
 
     delete[] d;
     cudaFree(dd);
