@@ -1,6 +1,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <math.h>
+#include <vector>
 
 // const size_t Nx = 64;
 // const size_t Ny = 64;
@@ -27,28 +28,8 @@ index_strides(const int i, const int j, const int k, const dim3 strides) {
     return i * strides.x + j * strides.y + k * strides.z;
 }
 
-// TODO parameterize ldg
-//__global__ void laplace3d(double *d, double *n) {
-//    int i = threadIdx.x + blockIdx.x * blockDim.x;
-//    int j = threadIdx.y + blockIdx.y * blockDim.y;
-//    int k = threadIdx.z + blockIdx.z * blockDim.z;
-//
-//    if (i > 0 && i < Nx - 1)
-//        if (j > 0 && j < Ny - 1)
-//            if (k > 0 && k < Nz - 1)
-//                d[index(i, j, k)] =
-//                    1. / 2. * ( //
-//                                  __ldg(&n[index(i - 1, j, k)]) +
-//                                  __ldg(&n[index(i + 1, j, k)]) //
-//                                  + __ldg(&n[index(i, j - 1, k)]) +
-//                                  __ldg(&n[index(i, j + 1, k)]) //
-//                                  + __ldg(&n[index(i, j, k - 1)]) +
-//                                  __ldg(&n[index(i, j, k + 1)]) //
-//                                  - 6. * __ldg(&n[index(i, j, k)]));
-//}
-
-__global__ void laplace3d_strides(double *d, double *n, const dim3 sizes,
-                                  const dim3 strides) {
+__global__ void laplace3d_ldg(double *d, double *n, const dim3 sizes,
+                              const dim3 strides) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     int k = threadIdx.z + blockIdx.z * blockDim.z;
@@ -92,6 +73,27 @@ __global__ void laplace3d_relative_indexing(double *d, double *n,
 
 __global__ void laplace3d_no_ldg(double *d, double *n, const dim3 sizes,
                                  const dim3 strides) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    int k = threadIdx.z + blockIdx.z * blockDim.z;
+
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1)
+                d[index_strides(i, j, k, strides)] =
+                    1. / 2. * (                                              //
+                                  (n[index_strides(i - 1, j, k, strides)])   //
+                                  + (n[index_strides(i + 1, j, k, strides)]) //
+                                  + (n[index_strides(i, j - 1, k, strides)]) //
+                                  + (n[index_strides(i, j + 1, k, strides)]) //
+                                  + (n[index_strides(i, j, k - 1, strides)]) //
+                                  + (n[index_strides(i, j, k + 1, strides)]) //
+                                  - 6. * (n[index_strides(i, j, k, strides)]));
+}
+
+__global__ void laplace3d_const_restrict(double *d,
+                                         const double *__restrict__ n,
+                                         const dim3 sizes, const dim3 strides) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     int k = threadIdx.z + blockIdx.z * blockDim.z;
@@ -187,13 +189,6 @@ void print(double *n, const dim3 sizes) {
                          pow(2. * M_PI / sizes.x, 3)
                   << std::endl;
     }
-    //    for (size_t i = 0; i < sizes.y; ++i) {
-    //        std::cout << (double)i / (double)(sizes.y - 1) << " \t"
-    //                  << 1. / -0.004 * n[index(sizes.x / 2, i, sizes.z /
-    //                  2,
-    //                  sizes)]
-    //                  << std::endl;
-    //    }
 }
 
 float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
@@ -202,7 +197,31 @@ float elapsed(cudaEvent_t &start, cudaEvent_t &stop) {
     return result;
 }
 
-enum class Variation { STANDARD, SHARED_MEM, NO_LDG, RELATIVE };
+enum class Variation { LDG, SHARED_MEM, NO_LDG, RELATIVE, CONST_RESTRICT };
+
+std::ostream &operator<<(std::ostream &s, Variation const &var) {
+    switch (var) {
+    case Variation::NO_LDG:
+        s << "no optimization,     ";
+        break;
+    case Variation::LDG:
+        s << "__ldg,               ";
+        break;
+    case Variation::SHARED_MEM:
+        s << "shared memory,       ";
+        break;
+    case Variation::RELATIVE:
+        s << "relative indexing,   ";
+        break;
+    case Variation::CONST_RESTRICT:
+        s << "const __restrict__,  ";
+        break;
+    default:
+        s << "n/a";
+    }
+
+    return s;
+}
 
 template <Variation Var>
 void execute(dim3 threadsPerBlock, double *dd, double *dn) {
@@ -216,39 +235,32 @@ void execute(dim3 threadsPerBlock, double *dd, double *dn) {
     dim3 nBlocks(Nx / threadsPerBlock.x, Ny / threadsPerBlock.y,
                  Nz / threadsPerBlock.z);
 
-    size_t smem_size = (threadsPerBlock.x + 2) * (threadsPerBlock.y + 2) *
-                       (threadsPerBlock.z + 2);
-
     cudaEventRecord(start_, 0);
 
     for (size_t i = 0; i < nrepeat; ++i) {
-        if (Var == Variation::SHARED_MEM)
+        if (Var == Variation::SHARED_MEM) {
+            size_t smem_size = (threadsPerBlock.x + 2) *
+                               (threadsPerBlock.y + 2) *
+                               (threadsPerBlock.z + 2);
             laplace3d_smem<<<nBlocks, threadsPerBlock,
                              smem_size * sizeof(double)>>>(dd, dn, sizes,
                                                            strides);
-        else if (Var == Variation::STANDARD)
-            laplace3d_strides<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes,
-                                                            strides);
+        } else if (Var == Variation::LDG)
+            laplace3d_ldg<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes, strides);
         else if (Var == Variation::NO_LDG)
             laplace3d_no_ldg<<<nBlocks, threadsPerBlock>>>(dd, dn, sizes,
                                                            strides);
+        else if (Var == Variation::CONST_RESTRICT)
+            laplace3d_const_restrict<<<nBlocks, threadsPerBlock>>>(
+                dd, dn, sizes, strides);
         else if (Var == Variation::RELATIVE)
             laplace3d_relative_indexing<<<nBlocks, threadsPerBlock>>>(
                 dd, dn, sizes, strides);
     }
-    //        laplace3d<<<nBlocks, threadsPerBlock>>>(dd, dn);
     cudaEventRecord(stop_, 0);
     cudaEventSynchronize(stop_);
 
-    std::cout << "# Variation: ";
-    if (Var == Variation::STANDARD)
-        std::cout << " Standard,       \t";
-    else if (Var == Variation::SHARED_MEM)
-        std::cout << " Shared Mem,     \t";
-    else if (Var == Variation::NO_LDG)
-        std::cout << " No LDG,         \t";
-    else if (Var == Variation::RELATIVE)
-        std::cout << " relative index, \t";
+    std::cout << "# Variation: " << Var;
     std::cout << "threads/block = (" << threadsPerBlock.x << "/"
               << threadsPerBlock.y << "/" << threadsPerBlock.z << "), \t";
     std::cout << "blocks = (" << nBlocks.x << "/" << nBlocks.y << "/"
@@ -276,17 +288,18 @@ int main() {
 
     cudaMemcpy(dn, n, sizeof(double) * total_size, cudaMemcpyHostToDevice);
 
-    // execute(dim3(32, 4, 4), dd, dn);
+    std::vector<dim3> threadsPerBlock;
+    threadsPerBlock.emplace_back(32, 4, 4);
+    threadsPerBlock.emplace_back(8, 8, 8);
+    threadsPerBlock.emplace_back(16, 8, 8);
 
-    execute<Variation::STANDARD>(dim3(32, 4, 4), dd, dn);
-    execute<Variation::STANDARD>(dim3(8, 8, 8), dd, dn);
-    execute<Variation::SHARED_MEM>(dim3(8, 8, 8), dd, dn);
-    execute<Variation::NO_LDG>(dim3(8, 8, 8), dd, dn);
-    execute<Variation::RELATIVE>(dim3(8, 8, 8), dd, dn);
-    execute<Variation::STANDARD>(dim3(16, 8, 8), dd, dn);
-    execute<Variation::STANDARD>(dim3(16, 16, 4), dd, dn);
-    execute<Variation::STANDARD>(dim3(32, 8, 4), dd, dn);
-    execute<Variation::STANDARD>(dim3(64, 4, 4), dd, dn);
+    for (auto dim : threadsPerBlock) {
+        execute<Variation::NO_LDG>(dim, dd, dn);
+        execute<Variation::LDG>(dim, dd, dn);
+        execute<Variation::CONST_RESTRICT>(dim, dd, dn);
+        execute<Variation::RELATIVE>(dim, dd, dn);
+        execute<Variation::SHARED_MEM>(dim, dd, dn);
+    }
 
     cudaMemcpy(d, dd, sizeof(double) * total_size, cudaMemcpyDeviceToHost);
 
