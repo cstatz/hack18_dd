@@ -3,12 +3,17 @@
 #include <math.h>
 #include <vector>
 
-// const size_t Nx = 64;
-// const size_t Ny = 64;
-// const size_t Nz = 64;
-// size_t Nx = 16;
-// size_t Ny = 8;
-// size_t Nz = 8;
+/**
+ * Several variations of a simple 3D 7-point Laplacian.
+ *
+ * Notes:
+ * - Since it is a very simple example which naturally fits the parallelization
+ * model of CUDA, there are not many elaborate optimization.
+ * - Using shared memory might help a lot once several stencils are fused to
+ * store intermediate values. In this example there is no/negligible performance
+ * improvement (depending on the GPU architecture).
+ */
+
 const size_t Nx = 128;
 const size_t Ny = 512;
 const size_t Nz = 512;
@@ -28,6 +33,34 @@ index_strides(const int i, const int j, const int k, const dim3 strides) {
     return i * strides.x + j * strides.y + k * strides.z;
 }
 
+/**
+ * Naive/non-optimized version.
+ */
+__global__ void laplace3d_no_ldg(double *d, double *n, const dim3 sizes,
+                                 const dim3 strides) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    int k = threadIdx.z + blockIdx.z * blockDim.z;
+
+    if (i > 0 && i < sizes.x - 1)
+        if (j > 0 && j < sizes.y - 1)
+            if (k > 0 && k < sizes.z - 1)
+                d[index_strides(i, j, k, strides)] =
+                    1. / 2. * (                                              //
+                                  (n[index_strides(i - 1, j, k, strides)])   //
+                                  + (n[index_strides(i + 1, j, k, strides)]) //
+                                  + (n[index_strides(i, j - 1, k, strides)]) //
+                                  + (n[index_strides(i, j + 1, k, strides)]) //
+                                  + (n[index_strides(i, j, k - 1, strides)]) //
+                                  + (n[index_strides(i, j, k + 1, strides)]) //
+                                  - 6. * (n[index_strides(i, j, k, strides)]));
+}
+
+/**
+ * Putting const __restrict__ on the read only pointers allows the compiler to
+ * automatically detect that the read-only data cache can be used (no need for
+ * explicit __ldg())
+ */
 __global__ void laplace3d_ldg(double *d, double *n, const dim3 sizes,
                               const dim3 strides) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -49,6 +82,10 @@ __global__ void laplace3d_ldg(double *d, double *n, const dim3 sizes,
                         - 6. * __ldg(&n[index_strides(i, j, k, strides)]));
 }
 
+/**
+ * Relative indexing should reduce the number of integer computations which
+ * could have an impact.
+ */
 __global__ void laplace3d_relative_indexing(double *d, double *n,
                                             const dim3 sizes,
                                             const dim3 strides) {
@@ -71,27 +108,12 @@ __global__ void laplace3d_relative_indexing(double *d, double *n,
                                          - 6. * __ldg(&n[index]));
 }
 
-__global__ void laplace3d_no_ldg(double *d, double *n, const dim3 sizes,
-                                 const dim3 strides) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
-    int k = threadIdx.z + blockIdx.z * blockDim.z;
-
-    if (i > 0 && i < sizes.x - 1)
-        if (j > 0 && j < sizes.y - 1)
-            if (k > 0 && k < sizes.z - 1)
-                d[index_strides(i, j, k, strides)] =
-                    1. / 2. * (                                              //
-                                  (n[index_strides(i - 1, j, k, strides)])   //
-                                  + (n[index_strides(i + 1, j, k, strides)]) //
-                                  + (n[index_strides(i, j - 1, k, strides)]) //
-                                  + (n[index_strides(i, j + 1, k, strides)]) //
-                                  + (n[index_strides(i, j, k - 1, strides)]) //
-                                  + (n[index_strides(i, j, k + 1, strides)]) //
-                                  - 6. * (n[index_strides(i, j, k, strides)]));
-}
-
-__global__ void laplace3d_const_restrict(double *d,
+/**
+ * Putting const __restrict__ on the read only pointers allows the compiler to
+ * automatically detect that the read-only data cache can be used (no need for
+ * explicit __ldg())
+ */
+__global__ void laplace3d_const_restrict(double *__restrict__ d,
                                          const double *__restrict__ n,
                                          const dim3 sizes, const dim3 strides) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -118,18 +140,37 @@ __host__ __device__ __forceinline__ int index_smem(const int i, const int j,
            (k + 1) * (blockDim.x + 2) * (blockDim.y + 2);
 }
 
+/**
+ * Shared memory is a per block scratch pad (user-managed cache), which usually
+ * is very beneficial for storing intermediate values.
+ *
+ * Here we just copy the local input of the stencil for each block into its
+ * buffer and read from the buffer.
+ * The halo region is filled by dedicated threads (first and last in all
+ * directions).
+ *
+ * Note: Another option would be to add extra threads for the halo points to
+ * each block and let them sleep for the actual computation.
+ */
 __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
                                const dim3 strides) {
     extern __shared__ double smem[];
+    // global indices
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     int k = threadIdx.z + blockIdx.z * blockDim.z;
 
+    // local indices
     int ii = threadIdx.x;
     int jj = threadIdx.y;
     int kk = threadIdx.z;
 
+    // copy all elements of the compute domain into the shared mem buffer (on
+    // block level)
     smem[index_smem(ii, jj, kk)] = __ldg(&n[index_strides(i, j, k, strides)]);
+
+    // first and last threads (in all dimensions copy the halo region into the
+    // shared mem buffer
     if (ii == 0)
         if (i > 0)
             smem[index_smem(-1, jj, kk)] =
@@ -160,6 +201,7 @@ __global__ void laplace3d_smem(double *d, double *n, const dim3 sizes,
     if (i > 0 && i < sizes.x - 1)
         if (j > 0 && j < sizes.y - 1)
             if (k > 0 && k < sizes.z - 1)
+                // read only from the shared mem buffer
                 d[index_strides(i, j, k, strides)] =
                     1. / 2. * (                                      //
                                   smem[index_smem(ii - 1, jj, kk)]   //
